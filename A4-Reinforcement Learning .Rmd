@@ -24,5 +24,12 @@ Assuming no variance over time (ah!) can you figure out a good trade off between
 
 ```{r}
 
+
+
+
+
 ```
+
+
+
 
