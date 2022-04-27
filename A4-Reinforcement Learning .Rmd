@@ -8,8 +8,10 @@ output: html_document
 ## Intructions
 
 Part 1 - You have to design a study (aka plan the number of trials) assuming that people are using a reinforcement learning process to pick between 2 stimuli. In this study you expect there to be 2 conditions and the 1 participant playing the game will vary its learning rate between conditions. The difference in learning rate is .2: 
-condition 1 has x - .1 
-condition 2 x + .1, with x = 0.7. The temperature is the same: 0.5.
+Condition 1: has x - .1 
+Condition 2: x + .1
+with x = 0.7. 
+The temperature is the same: 0.5.
 
 
 Identify a feasible number of trials and motivate it.
@@ -22,11 +24,64 @@ Assuming no variance over time (ah!) can you figure out a good trade off between
 [optional]: what are the differences in just re-running the model on the cumulative dataset (increased at every session) vs passing the posterior? Differences in terms of computational time, estimates, but also practical implication for running your study.
 [optional]: what happens if learning rate changes a bit across sessions? Include a variation between sessions according to a normal distribution with a mean of 0 and a sd of 0.02. Re-assess the number of trials/sessions used.
 
-```{r simulating data}
+Link for the written part of the assignment: https://docs.google.com/document/d/1FSt2rj1M7e8U3pK3zZD7gYwxpXsnlpQBRS-S8NwNwQU/edit 
+
+```{r functions}
+
+softmax <- function(x, tau){
+  outcome = 1 / (1 + exp(-tau * x))
+  return(outcome)
+}
 
 
+value_update <- function(value, alpha, choice, feedback){
+  
+  pe <- feedback - value
+  v1 <- value[1] + alpha * (1 - choice) * (feedback - value[1])
+  v2 <- value[2] + alpha * (choice) * (feedback - value[2])
+  
+  updated_value <- c(v1, v2)
+  return(updated_value)
+}
 
 
+fate <- function(trials, p){
+  fate <- rbinom(trials, 1, p)
+  return(fate)
+}
+
+
+agent <- function(fate, alpha, trials, temperature = 0.5, init_value = 0.5){
+  
+  data <- tibble(choice = rep(NA, trials), 
+                 value1 = rep(NA, trials),
+                 value2 = rep(NA, trials),
+                 feedback = rep(NA, trials))
+  
+  value <- c(init_value, init_value)
+  
+  for (trial in 1:trials){
+    
+    choice <- rbinom(1, 1, softmax(value[2] - value[1], temperature))
+    feedback <- ifelse(agent[i] == choice, 1, 0)
+    value <- value_update(value, alpha, choice, feedback)
+    
+    data$choice[i] <- choice
+    data$value1[i] <- value[1]
+    data$value2[i] <- value[2]
+    data$feedback[i] <- feedback
+  }
+  
+  return(data)
+
+}
+
+agent
+
+ # for (trial in 1:trials) {
+ #    choice <- rbinom(1, 1, softmax(value[2] - value[1], temperature))
+ #    feedback <- ifelse()
+ #  }
 
 ```
 
