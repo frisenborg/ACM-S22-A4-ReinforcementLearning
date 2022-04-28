@@ -3,9 +3,9 @@
 // The input data is a vector 'y' of length 'N'.
 data {
   int<lower=1> trials;
-  vector[trials] feedback;
-  vector[trials] choice;
-  vector[trials] condition;
+  array[trials] int feedback;
+  array[trials] int choice;
+  array[trials] int condition;
   real initValue;
   
 }
@@ -30,7 +30,8 @@ model {
   target += uniform_lpdf(alpha_2 | 0, 1);
   target += uniform_lpdf(temperature | 0, 20);
   
-  value = initValue;
+  value[1] = initValue;
+  value[2] = initValue;
   
   for (trial in 1:trials) {
     theta = softmax(temperature * value);
@@ -38,7 +39,7 @@ model {
     
     pe = feedback[trial] - value[choice[trial]];
     
-    value[choice[trial]] = (alpha_1 * (1-condition[trial]) + alpha_2 * (condition[trial])) * pe
+    value[choice[trial]] = (alpha_1 * (1-condition[trial]) + alpha_2 * (condition[trial])) * pe;
   }
 }
 
