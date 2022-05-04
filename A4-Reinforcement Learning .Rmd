@@ -26,13 +26,24 @@ Assuming no variance over time (ah!) can you figure out a good trade off between
 
 Link for the written part of the assignment: https://docs.google.com/document/d/1FSt2rj1M7e8U3pK3zZD7gYwxpXsnlpQBRS-S8NwNwQU/edit 
 
+# Setup 
+```{r setup}
+# packages 
+library("pacman")
+p_load(tidyverse, here, posterior, cmdstanr, rstan, brms)
+
+# use all computer cores 
+options(mc.cores = parallel::detectCores())
+rstan_options(auto.write = TRUE)
+```
+
+
 ```{r functions}
 
 softmax <- function(x, tau){
   outcome = 1 / (1 + exp(-tau * x))
   return(outcome)
 }
-
 
 value_update <- function(value, alpha, choice, feedback){
   
@@ -45,15 +56,17 @@ value_update <- function(value, alpha, choice, feedback){
 }
 
 
-fate <- function(trials, p){
+generate_fate <- function(trials, p){
   fate <- rbinom(trials, 1, p)
+  fate <- fate + 1
   return(fate)
 }
 
 
 agent <- function(fate, alpha, trials, temperature = 0.5, init_value = 0.5){
   
-  data <- tibble(choice = rep(NA, trials), 
+  data <- tibble(choice = rep(NA, trials),
+                 fate = rep(NA, trials),
                  value1 = rep(NA, trials),
                  value2 = rep(NA, trials),
                  feedback = rep(NA, trials))
@@ -63,28 +76,59 @@ agent <- function(fate, alpha, trials, temperature = 0.5, init_value = 0.5){
   for (trial in 1:trials){
     
     choice <- rbinom(1, 1, softmax(value[2] - value[1], temperature))
-    feedback <- ifelse(agent[i] == choice, 1, 0)
-    value <- value_update(value, alpha, choice, feedback)
+    choice <- choice + 1
+    feedback <- ifelse(fate[trial] == choice, 1, 0)
+    value <- value_update(value-1, alpha, choice, feedback)
     
-    data$choice[i] <- choice
-    data$value1[i] <- value[1]
-    data$value2[i] <- value[2]
-    data$feedback[i] <- feedback
+    data$choice[trial] <- choice
+    data$fate[trial] <- fate[trial]
+    data$value1[trial] <- value[1]
+    data$value2[trial] <- value[2]
+    data$feedback[trial] <- feedback
   }
   
   return(data)
 
 }
 
-agent
-
- # for (trial in 1:trials) {
- #    choice <- rbinom(1, 1, softmax(value[2] - value[1], temperature))
- #    feedback <- ifelse()
- #  }
 
 ```
 
 
+# Stan
+```{r stan}
+# variables 
+alpha <- 0.9
+temperature <- 0.5
+init_value <- 0.5
+trials <- 100
+p <- 0.5
+
+# 
+fate <- generate_fate(trials, p)
+df <- agent(fate, alpha, trials, temperature, init_value)
+
+stan_model <- cmdstan_model("stan_models/reinforcementlearning.stan")
+
+stan_data <- list(
+  trials = trials, 
+  feedback = df$feedback,
+  choice = df$choice,
+  condition = df$fate,
+  initValue = init_value
+)
+
+reinforcement_learning <- stan_model$sample(
+  data = stan_data,
+  seed = 345,
+  chains = 1, 
+  parallel_chains = 1, 
+  iter_warmup = 1000, 
+  iter_sampling = 2000,
+  refresh = 100
+)
+
+
+```
 
 
