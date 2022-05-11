@@ -1,36 +1,15 @@
 ---
 title: "A4-Reinforcement Learning"
-author: "MV + gang"
+author: ""
 date: "4/27/2022"
 output: html_document
 ---
 
-## Intructions
-
-Part 1 - You have to design a study (aka plan the number of trials) assuming that people are using a reinforcement learning process to pick between 2 stimuli. In this study you expect there to be 2 conditions and the 1 participant playing the game will vary its learning rate between conditions. The difference in learning rate is .2: 
-Condition 1: has x - .1 
-Condition 2: x + .1
-with x = 0.7. 
-The temperature is the same: 0.5.
-
-
-Identify a feasible number of trials and motivate it.
-[optional]: what happens if x is not = +.7 (tip: test a range of different x)?
-[optional]: what happens if temperature is not 0.5, but 5?
-
-
-Part 2 - Given the large number of trials required, could you imagine producing an iterated design? E.g. a phone app where you can do a smaller number of trials (e.g. 10-20 or even 100, up to you!) in separate sessions, each time a posterior is generated and it is used as prior in the next time.
-Assuming no variance over time (ah!) can you figure out a good trade off between how many trials per session and number of sessions?
-[optional]: what are the differences in just re-running the model on the cumulative dataset (increased at every session) vs passing the posterior? Differences in terms of computational time, estimates, but also practical implication for running your study.
-[optional]: what happens if learning rate changes a bit across sessions? Include a variation between sessions according to a normal distribution with a mean of 0 and a sd of 0.02. Re-assess the number of trials/sessions used.
-
-Link for the written part of the assignment: https://docs.google.com/document/d/1FSt2rj1M7e8U3pK3zZD7gYwxpXsnlpQBRS-S8NwNwQU/edit 
-
 # Setup 
-```{r setup}
+```{r Setup}
 # packages 
 library("pacman")
-p_load(tidyverse, here, posterior, cmdstanr, rstan, brms)
+p_load(tidyverse, here, posterior, cmdstanr, rstan, brms, ggridges)
 
 # use all computer cores 
 options(mc.cores = parallel::detectCores())
@@ -38,97 +17,347 @@ rstan_options(auto.write = TRUE)
 ```
 
 
-```{r functions}
-
-softmax <- function(x, tau){
+```{r Functions}
+softmax <- function(x, tau) {
   outcome = 1 / (1 + exp(-tau * x))
   return(outcome)
 }
 
 value_update <- function(value, alpha, choice, feedback){
-  
-  pe <- feedback - value
   v1 <- value[1] + alpha * (1 - choice) * (feedback - value[1])
-  v2 <- value[2] + alpha * (choice) * (feedback - value[2])
+  v2 <- value[2] + alpha * choice * (feedback - value[2])
   
-  updated_value <- c(v1, v2)
-  return(updated_value)
+  return(c(v1, v2))
 }
-
 
 generate_fate <- function(trials, p){
   fate <- rbinom(trials, 1, p)
-  fate <- fate + 1
+
+  fate <- tibble(
+    trial     = seq(1, trials),
+    fate      = fate
+  )
+  
   return(fate)
 }
 
+generate_experiment <- function(trials, condition1_p, condition2_p) {
+  trials <- trials / 2
+  
+  condition1 <- generate_fate(trials, condition1_p) %>%
+    mutate(condition = 1)
+  condition2 <- generate_fate(trials, condition2_p) %>%
+    mutate(condition = 2)
+  
+  # Combine the two conditions and shuffle them
+  experiment <- rbind(condition1, condition2)
+  experiment <- experiment[sample(1:nrow(experiment)), ]
+  
+  return(experiment)
+}
 
-agent <- function(fate, alpha, trials, temperature = 0.5, init_value = 0.5){
-  
-  data <- tibble(choice = rep(NA, trials),
-                 fate = rep(NA, trials),
-                 value1 = rep(NA, trials),
-                 value2 = rep(NA, trials),
-                 feedback = rep(NA, trials))
-  
+agent <- function(
+  experiment, condition1_alpha, condition2_alpha,
+  temperature=.5, init_value=.5){
+  # Prepare the data
   value <- c(init_value, init_value)
+  trials <- nrow(experiment)
+  data <- tibble(
+    trial     = seq(1, trials),
+    condition = experiment$condition,
+    fate      = experiment$fate,
+    choice    = rep(NA, trials),
+    value0    = rep(NA, trials),
+    value1    = rep(NA, trials),
+    feedback  = rep(NA, trials)
+  )
   
-  for (trial in 1:trials){
+  # Run the experiment and update values accordingly
+  for (trial in seq(1, trials)){
+    condition <- experiment$condition[trial]
     
     choice <- rbinom(1, 1, softmax(value[2] - value[1], temperature))
-    choice <- choice + 1
-    feedback <- ifelse(fate[trial] == choice, 1, 0)
-    value <- value_update(value-1, alpha, choice, feedback)
+    feedback <- ifelse(experiment$fate[trial] == choice, 1, -1)  # should it be 0 or -1?
+    # Update values according to condition
+    if (condition == 1) {
+      value <- value_update(value, condition1_alpha, choice, feedback)
+    } else {
+      value <- value_update(value, condition2_alpha, choice, feedback)
+    }
     
-    data$choice[trial] <- choice
-    data$fate[trial] <- fate[trial]
-    data$value1[trial] <- value[1]
-    data$value2[trial] <- value[2]
-    data$feedback[trial] <- feedback
+    data$choice[trial]    <- choice
+    data$value0[trial]    <- value[1]
+    data$value1[trial]    <- value[2]
+    data$feedback[trial]  <- feedback
   }
   
   return(data)
-
 }
 
-
 ```
 
 
-# Stan
-```{r stan}
-# variables 
-alpha <- 0.9
+```{r Simulate Data}
+# Simulation parameters
+execute <- TRUE
+trials_vector <- c(10, 50, 200, 500, 1000, 2500, 5000, 10000)
+# Parameters for the reinforcement learning
+x <- .7
+condition1_alpha <- x - .1
+condition2_alpha <- x + .1
 temperature <- 0.5
 init_value <- 0.5
-trials <- 100
-p <- 0.5
+# Parameters for the experiment
+condition1_p <- 0.3
+condition2_p <- 0.7
 
-# 
-fate <- generate_fate(trials, p)
-df <- agent(fate, alpha, trials, temperature, init_value)
 
-stan_model <- cmdstan_model("stan_models/reinforcementlearning.stan")
+if (execute) {
+  stan_model <- cmdstan_model("C:/Users/tobia/Documents/dev/ACM/ACM-S22-A4-ReinforcementLearning/stan_models/reinforcementlearning.stan")
+  
+  for (trials in trials_vector) {
+    experiment <- generate_experiment(trials, condition1_p, condition2_p)
+    df <- agent(experiment, condition1_alpha, condition2_alpha, temperature, init_value)
+    df$trials <- trials
+    
+    stan_data <- list(
+      trials     = trials,
+      init_value = init_value,
+      feedback   = df$feedback,
+      choice     = df$choice+1,
+      condition  = df$condition
+    )
+    # Append current experiment to data_df
+    if (trials == trials_vector[1]) {
+      data_df <- df
+    } else {
+      data_df <- rbind(data_df, df)
+    }
+    
+    stan_samples <- stan_model$sample(
+      data = stan_data,
+      seed = 123,
+      chains = 4, 
+      parallel_chains = 4, 
+      iter_warmup = 1000, 
+      iter_sampling = 2000,
+      refresh = 100,
+      adapt_delta = .99,
+      max_treedepth = 20
+    )
+    
+    draws <- as_draws_df(stan_samples$draws())
+    draws$trials <- trials
+    
+    if (trials == trials_vector[1]) {
+      draws_df <- draws
+    } else {
+      draws_df <- rbind(draws_df, draws)
+    }
+  }
+  # Cleanup environment
+  rm(df, experiment, draws, stan_data, stan_samples, trials, stan_model)
+  
+  # Save files
+  saveRDS(data_df, "data/data_df.rds")
+  saveRDS(draws_df, "data/draws_df.rds")
+}
 
-stan_data <- list(
-  trials = trials, 
-  feedback = df$feedback,
-  choice = df$choice,
-  condition = df$fate,
-  initValue = init_value
-)
+rm(x, trials_vector, execute)
 
-reinforcement_learning <- stan_model$sample(
-  data = stan_data,
-  seed = 345,
-  chains = 1, 
-  parallel_chains = 1, 
-  iter_warmup = 1000, 
-  iter_sampling = 2000,
-  refresh = 100
-)
+data_df  <- readRDS("data/data_df.rds")
+draws_df <- readRDS("data/draws_df.rds")
+```
 
+
+```{r Parameter Recovery}
+
+draws_df %>%
+  mutate(trials = as.factor(trials)) %>%
+  ggplot(aes(x=condition1_alpha, y=trials, fill=..y.., color="white")) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_fill_gradient(low="deepskyblue4", high="deepskyblue3") +
+  scale_color_manual(values = c("white")) + 
+  geom_vline(xintercept=condition1_alpha, size=1.1, color="firebrick3", alpha=0.7) +
+  xlim(0, 1) +
+  theme_ridges() + 
+  theme(legend.position = "none") +
+  labs(
+    title="Parameter Recovery for Condition1 RL Alpha",
+    x="Samples",
+    y="Trials")
+
+ggsave("plots/condition1_alpha.jpg", width=7.29, height=4.5)
+
+
+draws_df %>%
+  mutate(trials = as.factor(trials)) %>%
+  ggplot(aes(x=condition2_alpha, y=trials, fill=..y.., color="white")) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_fill_gradient(low="seagreen4", high="seagreen3") +
+  scale_color_manual(values = c("white")) + 
+  geom_vline(xintercept=condition2_alpha, size=1.1, color="firebrick3", alpha=0.7) +
+  xlim(0, 1) +
+  theme_ridges() + 
+  theme(legend.position = "none") +
+  labs(
+    title="Parameter Recovery for Condition2 RL Alpha",
+    x="Samples",
+    y="Trials")
+
+ggsave("plots/condition2_alpha.jpg", width=7.29, height=4.5)
 
 ```
+
+
+```{r Iterated Design}
+
+# Simulation parameters
+execute <- TRUE
+total_trials <- 2000
+session_trials_vector <- c(10, 20, 50, 100, 200)
+# Parameters for the reinforcement learning
+x <- .7
+condition1_alpha <- x - .1
+condition2_alpha <- x + .1
+temperature <- 0.5
+init_value <- 0.5
+# Parameters for the experiment
+condition1_p <- 0.3
+condition2_p <- 0.7
+
+
+if (execute) {
+  stan_model <- cmdstan_model("stan_models/reinforcementlearning_iterated_design.stan")
+  
+  for (session_trials in session_trials_vector) {
+    for (trials in seq(0, total_trials, session_trials)) {
+      
+      if (trials == 0) {
+        # Set priors for the initial session  
+        condition1_alpha_mu    <- 0.5
+        condition1_alpha_sigma <- 0.25
+        condition2_alpha_mu    <- 0.5
+        condition2_alpha_sigma <- 0.25
+        temperature_mu         <- 10
+        temperature_sigma      <- 5
+      }
+      
+      else if (trials != total_trials) {
+        experiment <- generate_experiment(session_trials, condition1_p, condition2_p)
+        session_df <- agent(experiment, condition1_alpha, condition2_alpha, temperature, init_value)
+        
+        stan_data <- list(
+          trials                 = session_trials,
+          init_value             = init_value,
+          feedback               = session_df$feedback,
+          choice                 = session_df$choice+1,
+          condition              = session_df$condition,
+          condition1_alpha_mu    = condition1_alpha_mu,
+          condition1_alpha_sigma = condition1_alpha_sigma,
+          condition2_alpha_mu    = condition2_alpha_mu,
+          condition2_alpha_sigma = condition2_alpha_sigma,
+          temperature_mu         = temperature_mu,
+          temperature_sigma      = temperature_sigma
+        )
+        
+        stan_samples <- stan_model$sample(
+          data = stan_data,
+          seed = 123,
+          chains = 4, 
+          parallel_chains = 4, 
+          iter_warmup = 1000, 
+          iter_sampling = 2000,
+          refresh = 100,
+          adapt_delta = .99,
+          max_treedepth = 20
+        )
+        
+        # Calculate priors for future session
+        draws <- as_draws_df(stan_samples$draws())
+        condition1_alpha_mu    <- mean(draws$condition1_alpha)
+        condition1_alpha_sigma <-   sd(draws$condition1_alpha)
+        condition2_alpha_mu    <- mean(draws$condition2_alpha)
+        condition2_alpha_sigma <-   sd(draws$condition2_alpha)
+        temperature_mu         <- mean(draws$temperature)
+        temperature_sigma      <-   sd(draws$temperature)
+        
+        draws$session_trials <- session_trials
+      }
+      
+      if (trials == total_trials & session_trials == session_trials_vector[1]) {
+        # Save posterior estimates
+        draws_df <- draws
+      }
+      
+      else if (trials == total_trials) {
+        draws_df <- rbind(draws_df, draws)
+      }
+    }
+  }
+  
+  # Cleanup environment
+  rm(df, experiment, draws, stan_data, stan_samples, trials,
+     stan_model, session_trials)
+  
+  saveRDS(data_df, "data/data_df_iterated.rds")
+  saveRDS(draws_df, "data/draws_df_iterated.rds")
+}
+
+# Cleanup environment
+rm(session_trials_vector, total_trials, x, condition1_alpha_mu,
+   condition1_alpha_sigma, condition2_alpha_mu,
+   condition2_alpha_sigma, temperature_mu,
+   temperature_sigma, init_value, execute)
+
+# Load data
+data_df  <- readRDS("data/data_df_iterated.rds")
+draws_df <- readRDS("data/draws_df_iterated.rds")
+```
+
+
+```{r Parameter Recovery Iterated}
+
+draws_df %>%
+  mutate(trials = as.factor(session_trials)) %>%
+  ggplot(aes(x=condition1_alpha, y=trials, fill=..y.., color="white")) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_fill_gradient(low="deepskyblue4", high="deepskyblue3") +
+  scale_color_manual(values = c("white")) + 
+  geom_vline(xintercept=condition1_alpha, size=1.1, color="firebrick3", alpha=0.7) +
+  xlim(0, 1) +
+  theme_ridges() + 
+  theme(legend.position = "none") +
+  labs(
+    title="Parameter Recovery for Condition1 RL Alpha",
+    x="Samples",
+    y="Trials per Session")
+
+ggsave("plots/condition1_alpha_iterated.jpg", width=7.29, height=4.5)
+
+
+draws_df %>%
+  mutate(trials = as.factor(session_trials)) %>%
+  ggplot(aes(x=condition2_alpha, y=trials, fill=..y.., color="white")) +
+  geom_density_ridges(rel_min_height = 0.01) +
+  scale_fill_gradient(low="seagreen4", high="seagreen3") +
+  scale_color_manual(values = c("white")) + 
+  geom_vline(xintercept=condition2_alpha, size=1.1, color="firebrick3", alpha=0.7) +
+  xlim(0, 1) +
+  theme_ridges() + 
+  theme(legend.position = "none") +
+  labs(
+    title="Parameter Recovery for Condition2 RL Alpha",
+    x="Samples",
+    y="Trials per Session")
+
+ggsave("plots/condition2_alpha_iterated.jpg", width=7.29, height=4.5)
+
+```
+
+
+
+
+
 
 
